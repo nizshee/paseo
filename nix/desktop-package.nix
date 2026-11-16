@@ -97,6 +97,11 @@ buildNpmPackage {
   buildPhase = ''
     runHook preBuild
 
+    # npmConfigHook installs with --ignore-scripts, so the root postinstall never
+    # runs. Apply the patch-package patches explicitly; without them the app
+    # bundles unpatched dependencies and the renderer crashes at startup.
+    npm run postinstall
+
     # Native deps (terminal emulation; libuv-linked on Linux)
     npm rebuild node-pty
 
