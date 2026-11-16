@@ -2303,7 +2303,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       return;
     }
 
-    if (selection.hasAvailableModes) {
+    const modeOption = selection.configOption;
+    const useConfigOption = Boolean(modeOption && selection.configChoice);
+    if (selection.hasAvailableModes && !useConfigOption) {
       if (!selection.availableMode) {
         this.warnInvalidSelection(
           modeId,
@@ -2313,8 +2315,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         );
         return;
       }
-    } else {
-      const modeOption = selection.configOption;
+    } else if (!useConfigOption) {
       if (!modeOption) {
         throw new Error(`${this.provider} does not expose ACP mode switching`);
       }
@@ -2339,7 +2340,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       }
     }
 
-    if (selection.hasAvailableModes) {
+    if (selection.hasAvailableModes && !useConfigOption) {
       const { connection, sessionId } = this;
       await this.runACPRequest(() => connection.setSessionMode({ sessionId, modeId }));
       this.currentMode = modeId;
@@ -2352,7 +2353,6 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       return;
     }
 
-    const modeOption = selection.configOption;
     if (!modeOption) {
       throw new Error(`${this.provider} does not expose ACP mode switching`);
     }

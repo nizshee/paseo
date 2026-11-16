@@ -831,7 +831,23 @@ class AcpRuntime {
       }
     }
     if (change.target === "mode") {
-      if (!change.value || !this.modes) {
+      if (!change.value) {
+        throw new Error("ACP session does not expose mode configuration");
+      }
+      const modeOption = this.configOptions.find((option) => option.category === "mode");
+      if (modeOption && selectOptions(modeOption).some((option) => option.value === change.value)) {
+        const response = await this.call(
+          this.connection.setSessionConfigOption({
+            sessionId: this.nativeSessionId,
+            configId: modeOption.id,
+            value: String(change.value),
+          }),
+        );
+        this.configOptions = response.configOptions;
+        if (this.modes) this.modes = { ...this.modes, currentModeId: String(change.value) };
+        return;
+      }
+      if (!this.modes) {
         throw new Error("ACP session does not expose mode configuration");
       }
       await this.call(
@@ -898,7 +914,11 @@ class AcpRuntime {
     modes: NewSessionResponse["modes"],
     options: readonly SessionConfigOption[],
   ): Promise<void> {
-    if (modes?.currentModeId && this.modes?.currentModeId !== modes.currentModeId) {
+    if (
+      modes?.currentModeId &&
+      this.modes?.currentModeId !== modes.currentModeId &&
+      !options.some((option) => option.category === "mode")
+    ) {
       await this.call(
         this.connection.setSessionMode({
           sessionId: this.nativeSessionId,
@@ -910,13 +930,17 @@ class AcpRuntime {
     for (const option of options) {
       const value = option.currentValue;
       if (currentValues[option.id] === value) continue;
-      await this.call(
+      const response = await this.call(
         this.connection.setSessionConfigOption({
           sessionId: this.nativeSessionId,
           configId: option.id,
           ...(typeof value === "boolean" ? { type: "boolean" as const, value } : { value }),
         }),
       );
+      this.configOptions = response.configOptions;
+      if (option.category === "mode" && this.modes && typeof value === "string") {
+        this.modes = { ...this.modes, currentModeId: value };
+      }
     }
   }
 

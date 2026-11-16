@@ -480,6 +480,46 @@ function prepareConfiguredOverrideSession(
   return { internals, setSessionMode, unstableSetSessionModel, setSessionConfigOption };
 }
 
+test("ACP setMode prefers a matching mode config option over advertised modes", async () => {
+  const session = createSessionWithConfig({ provider: "generic-acp" });
+  const modeOption = selectConfigOption("mode", ["default", "plan"]);
+  const { setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
+    currentMode: "default",
+    availableModes: [
+      { id: "default", label: "Default" },
+      { id: "plan", label: "Plan" },
+    ],
+    configOptions: [modeOption],
+  });
+
+  await session.setMode("plan");
+
+  expect(setSessionConfigOption).toHaveBeenCalledWith({
+    sessionId: "session-1",
+    configId: "mode-option",
+    value: "plan",
+  });
+  expect(setSessionMode).not.toHaveBeenCalled();
+});
+
+test("ACP setMode falls back to advertised modes when the mode config option lacks the choice", async () => {
+  const session = createSessionWithConfig({ provider: "generic-acp" });
+  const modeOption = selectConfigOption("mode", ["default", "ask"]);
+  const { setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
+    currentMode: "default",
+    availableModes: [
+      { id: "default", label: "Default" },
+      { id: "plan", label: "Plan" },
+    ],
+    configOptions: [modeOption],
+  });
+
+  await session.setMode("plan");
+
+  expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "plan" });
+  expect(setSessionConfigOption).not.toHaveBeenCalled();
+});
+
 test("ACP setModel only uses config-option fallback when the matching select choice contains the model", async () => {
   const logger = createTestLogger();
   const childLogger = { trace: vi.fn(), warn: vi.fn() };
@@ -1154,7 +1194,7 @@ describe("ACPAgentSession Zed parity", () => {
     );
   });
 
-  test("does not use config-option fallback when Cursor-style availableModes omit the stored mode", async () => {
+  test("uses a matching mode config-option choice when availableModes omit the stored mode", async () => {
     const session = createSessionWithConfig({ modeId: "acceptEdits" });
     const { internals, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
       currentMode: "default",
@@ -1167,7 +1207,11 @@ describe("ACPAgentSession Zed parity", () => {
     });
 
     await expect(internals.applyConfiguredOverrides()).resolves.toBeUndefined();
-    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "mode-option",
+      value: "acceptEdits",
+    });
   });
 
   test("does not fail session start when configured model cannot be applied by ACP", async () => {
@@ -1741,7 +1785,7 @@ describe("ACPAgentSession Zed parity", () => {
     await expect(session.getCurrentMode()).resolves.toBe(COPILOT_ALLOW_ALL_MODE_ID);
   });
 
-  test("switching Copilot away from Allow All turns allow_all off before setting the ACP mode", async () => {
+  test("switching Copilot away from Allow All turns allow_all off before setting the mode config option", async () => {
     const setSessionConfigOption = vi.fn(async (input: { value: string }) => ({
       configOptions: [
         copilotModeConfigOption("https://agentclientprotocol.com/protocol/session-modes#agent"),
@@ -1767,10 +1811,12 @@ describe("ACPAgentSession Zed parity", () => {
       configId: "allow_all",
       value: "off",
     });
-    expect(setSessionMode).toHaveBeenCalledWith({
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-1",
-      modeId: "https://agentclientprotocol.com/protocol/session-modes#agent",
+      configId: "mode",
+      value: "https://agentclientprotocol.com/protocol/session-modes#agent",
     });
+    expect(setSessionMode).not.toHaveBeenCalled();
   });
 
   test("trusts Copilot allow_all config updates as the current mode source", async () => {

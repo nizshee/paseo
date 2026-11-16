@@ -86,6 +86,7 @@ interface ConnectorResponse {
 interface ConnectorHarnessOptions {
   capabilities?: Record<string, unknown>;
   configOptions?: unknown[];
+  modes?: unknown;
   /** Session updates the agent streams for a prompt (keyed by its text) before ending the turn. */
   promptUpdates?(promptText: string): unknown[];
   handleMessage?(instance: ConnectorInstance, message: AcpStreamMessage): boolean;
@@ -125,7 +126,7 @@ function respondToConnectorRequest(
   } else if (request.method === "session/new" || request.method === "session/load") {
     instance.respond(request, {
       sessionId: "connector-session",
-      modes: null,
+      modes: options?.modes ?? null,
       configOptions: options?.configOptions ?? [],
     });
   } else if (request.method === "session/prompt") {
@@ -135,18 +136,24 @@ function respondToConnectorRequest(
       instance.notify("session/update", { sessionId: "connector-session", update });
     }
     instance.respond(request, { stopReason: "end_turn" });
-  } else if (request.method === "session/close") {
-    instance.respond(request, {});
   } else if (request.method === "session/set_config_option") {
-    const params = request.params as { configId: string; value: string | boolean };
-    instance.respond(request, {
-      configOptions: (options?.configOptions ?? []).map((option) =>
-        (option as { id?: string }).id === params.configId
-          ? Object.assign({}, option, { currentValue: params.value })
-          : option,
-      ),
-    });
+    instance.respond(request, configOptionResponse(request, options));
+  } else if (EMPTY_RESPONSE_METHODS.has(request.method)) {
+    instance.respond(request, {});
   }
+}
+
+const EMPTY_RESPONSE_METHODS = new Set(["session/close", "session/set_mode"]);
+
+function configOptionResponse(request: AcpRequestMessage, options?: ConnectorHarnessOptions) {
+  const params = request.params as { configId: string; value: string | boolean };
+  return {
+    configOptions: (options?.configOptions ?? []).map((option) =>
+      (option as { id?: string }).id === params.configId
+        ? Object.assign({}, option, { currentValue: params.value })
+        : option,
+    ),
+  };
 }
 
 function connectorHarness(options?: ConnectorHarnessOptions) {
@@ -1030,6 +1037,93 @@ lines.on("line", (line) => {
         .map((event) => (event as Extract<ProviderEvent, { type: "request.completed" }>).requestId),
     ).toEqual(["configure-first", "configure-second"]);
 
+    await connection.close();
+  });
+
+  it("uses mode config options and restores them without legacy mode calls on rollback", async () => {
+    const configOptions = [
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { name: "Default", value: "default" },
+          { name: "Plan", value: "plan" },
+        ],
+      },
+      {
+        id: "blocked",
+        name: "Blocked",
+        type: "select",
+        currentValue: "initial",
+        options: [{ name: "Initial", value: "initial" }],
+      },
+    ];
+    const harness = connectorHarness({
+      configOptions,
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+      handleRequest(instance, request) {
+        if (
+          request.method !== "session/set_config_option" ||
+          (request.params as { configId: string }).configId !== "blocked"
+        ) {
+          return false;
+        }
+        instance.reject(request, "blocked rejected");
+        return true;
+      },
+    });
+    const registration = runAcpProvider({
+      id: "mode-config-acp",
+      label: "Mode Config ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.configure"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-mode-rollback",
+      sessionId: "session-1",
+      changes: { mode: "plan", settings: { blocked: "rejected" } },
+    });
+    await waitForEvent(
+      events,
+      (event) => event.type === "request.failed" && event.requestId === "configure-mode-rollback",
+    );
+
+    const requests = harness.instances[1]!.requests;
+    expect(
+      requests
+        .filter(
+          (request) =>
+            request.method === "session/set_config_option" &&
+            (request.params as { configId: string }).configId === "mode",
+        )
+        .map((request) => (request.params as { value: string }).value),
+    ).toEqual(["plan", "default"]);
+    expect(countRequests(harness.instances[1]!, "session/set_mode")).toBe(0);
+
+    await connection.send({ type: "catalog", requestId: "catalog-after-mode-rollback" });
+    const isCatalogAfterRollback = (event: ProviderEvent) =>
+      event.type === "catalog" && event.requestId === "catalog-after-mode-rollback";
+    await expect
+      .poll(() => events.find(isCatalogAfterRollback))
+      .toMatchObject({ catalog: { defaultMode: "default" } });
     await connection.close();
   });
 
